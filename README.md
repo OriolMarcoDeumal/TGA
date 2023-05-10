@@ -1,0 +1,2 @@
+# TGA
+Histogram Equalization
