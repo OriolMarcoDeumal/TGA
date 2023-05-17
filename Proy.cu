@@ -30,30 +30,37 @@ __global__ void equalize_kernel(unsigned char *input_ptr, int *histogram_equaliz
     }
 }
 
-__global__ void ycbcr_kernel(unsigned char *input_ptr, int width, int height) {
+__global__ void ycbcr_kernel(unsigned char *input_ptr, int width, int height, bool toYCbCr) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < width * height * 3) {
         int r = input_ptr[idx + 0];
         int g = input_ptr[idx + 1];
         int b = input_ptr[idx + 2];
 
-        int Y = (int) (16 + 0.25679890625 * r + 0.50412890625 * g + 0.09790625 * b);
-        int Cb = (int) (128 - 0.168736 * r - 0.331264 * g + 0.5 * b);
-        int Cr = (int) (128 + 0.5 * r - 0.418688 * g - 0.081312 * b);
+        if (toYCbCr) {
+            int Y = (int) (16 + 0.25679890625 * r + 0.50412890625 * g + 0.09790625 * b);
+            int Cb = (int) (128 - 0.168736 * r - 0.331264 * g + 0.5 * b);
+            int Cr = (int) (128 + 0.5 * r - 0.418688 * g - 0.081312 * b);
 
-        input_ptr[idx + 0] = Y;
-        input_ptr[idx + 1] = Cb;
-        input_ptr[idx + 2] = Cr;
+            input_ptr[idx + 0] = Y;
+            input_ptr[idx + 1] = Cb;
+            input_ptr[idx + 2] = Cr;
+        } else {
+            int Y = r;
+            int Cb = g;
+            int Cr = b;
 
-        int R = max(0, min(255, (int) (Y + 1.402 * (Cr - 128))));
-        int G = max(0, min(255, (int) (Y - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128))));
-        int B = max(0, min(255, (int) (Y + 1.772 * (Cb - 128))));
+            int R = max(0, min(255, (int) (Y + 1.402 * (Cr - 128))));
+            int G = max(0, min(255, (int) (Y - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128))));
+            int B = max(0, min(255, (int) (Y + 1.772 * (Cb - 128))));
 
-        input_ptr[idx + 0] = R;
-        input_ptr[idx + 1] = G;
-        input_ptr[idx + 2] = B;
-    }
-}
+            input_ptr[idx + 0] = R;
+            input_ptr[idx + 1] = G;
+            input_ptr[idx + 2] = B;
+        }
+   
+
+}}
 
 // Función para verificar los errores de CUDA
 void CheckCudaError(char sms[], int line) {
@@ -181,6 +188,9 @@ __global__ void eq_GPU(unsigned char *input_ptr, int width, int height, int chan
     cudaMallocManaged(&histogram, 256 * sizeof(int));
     cudaMemset(histogram, 0, 256 * sizeof(int));
 
+    // Cambios: Convertir la imagen de RGB a YCbCr
+    ycbcr_kernel<<<grid_dim, block_dim>>>(d_image, width, height, /*toYCbCr=*/true);
+
     // Ejecutar kernel para crear histograma
     histogram_kernel<<<grid_dim, block_dim>>>(d_image, histogram, width, height);
 
@@ -203,7 +213,7 @@ __global__ void eq_GPU(unsigned char *input_ptr, int width, int height, int chan
     // Crear arreglo de histograma equalizado
     int* histogram_equalized;
     cudaMallocManaged(&histogram_equalized, 256 * sizeof(int));
-    cudaMemset(histogram_equalized, 0, 256 * sizeof(int));
+    cudaMemset(histogram_equalized, 0, 256 * sizeof(int
     for (int i = 0; i < 256; i++) {
         histogram_equalized[i] = (int) (255.0f * histogram_accumulated[i] / (width * height));
     }
@@ -217,11 +227,11 @@ __global__ void eq_GPU(unsigned char *input_ptr, int width, int height, int chan
     // Verificar errores de CUDA
     CheckCudaError((char *)"Error al ejecutar kernel de equalización", __LINE__);
 
-    // Convertir la imagen de RGB a YCbCr
-    ycbcr_kernel<<<grid_dim, block_dim>>>(d_image, width, height);
+    // Cambios: Convertir la imagen de YCbCr a RGB
+    ycbcr_kernel<<<grid_dim, block_dim>>>(d_image, width, height, /*toYCbCr=*/false);
 
     // Verificar errores de CUDA
-    CheckCudaError((char *)"Error al convertir la imagen a YCbCr", __LINE__);
+    CheckCudaError((char *)"Error al convertir la imagen a RGB", __LINE__);
 
     // Transferir la imagen de la GPU al CPU
     cudaMemcpy(image, d_image, width * height * channels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
@@ -236,6 +246,6 @@ __global__ void eq_GPU(unsigned char *input_ptr, int width, int height, int chan
     stbi_image_free(image);
 
     return 0;
-
 }
+
 
