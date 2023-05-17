@@ -14,6 +14,7 @@ using namespace std;
 
 // Funciones del kernel
 __global__ void histogram_kernel(unsigned char *input_ptr, int *histogram, int width, int height) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int px = idx / 3;
     int channel = idx % 3;
 if (px < width * height && channel == 0) {
@@ -24,6 +25,7 @@ if (px < width * height && channel == 0) {
 
 
 __global__ void equalize_kernel(unsigned char *input_ptr, int *histogram_equalized, int width, int height) {
+     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int px = idx / 3;
     int channel = idx % 3;
 if (px < width * height && channel == 0) {
