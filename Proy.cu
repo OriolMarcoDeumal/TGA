@@ -14,21 +14,26 @@ using namespace std;
 
 // Funciones del kernel
 __global__ void histogram_kernel(unsigned char *input_ptr, int *histogram, int width, int height) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int px = idx / 3;
-    int channel = idx % 3;
-if (px < width * height && channel == 0) {
-    int Y = (int)(16 + 0.25679890625 * input_ptr[px * 3 + 0] + 0.50412890625 * input_ptr[px * 3 + 1] + 0.09790625 * input_ptr[px * 3 + 2]);
+    int px = 3 *( blockIdx.x * blockDim.x + threadIdx.x);
+    
+    if (px < width * height) {
+        int Y = (int)(16 + 0.25679890625 * input_ptr[px] + 0.50412890625 * input_ptr[px + 1] + 0.09790625 * input_ptr[px + 2]);
+	int Cb = (int) (128 - 0.168736*input_ptr[px] - 0.331264*input_ptr[px+1] +0.5*input_ptr[px+2]);
+	int Cr = (int) (128 + 0.5*input_ptr[px] - 0.418688*input_ptr[px+1] - 0.081312*input_ptr[px+2]);
+
+        input_ptr[px]=Y;
+    	input_ptr[px+1] = Cb;
+	input_ptr[px+2] = Cr;
+
+
     atomicAdd(&histogram[Y], 1);
 }
 }
 
 
 __global__ void equalize_kernel(unsigned char *input_ptr, int *histogram_equalized, int width, int height) {
-     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int px = idx / 3;
-    int channel = idx % 3;
-if (px < width * height && channel == 0) {
+     int idx =3*( blockIdx.x * blockDim.x + threadIdx.x);
+if (idx < width * height) {
     int value_before = input_ptr[idx];
     int value_after = histogram_equalized[value_before];
     input_ptr[idx] = value_after;
@@ -36,14 +41,12 @@ if (px < width * height && channel == 0) {
 }
 
 __global__ void ycbcr_kernel(unsigned char *input_ptr, int width, int height, bool toYCbCr) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int px = idx / 3;
-    int channel = idx % 3;
+    int idx = 3*(blockIdx.x * blockDim.x + threadIdx.x);
     
-    if (px < width * height) {
-        int r = input_ptr[px * 3 + 0];
-        int g = input_ptr[px * 3 + 1];
-        int b = input_ptr[px * 3 + 2];
+    if (idx < width * height) {
+        int r = input_ptr[idx * 3 + 0];
+        int g = input_ptr[idx * 3 + 1];
+        int b = input_ptr[idx * 3 + 2];
     
         if (toYCbCr) {
             int Y = (int) (16 + 0.25679890625 * r + 0.50412890625 * g + 0.09790625 * b);
