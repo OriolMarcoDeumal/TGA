@@ -80,90 +80,9 @@ void CheckCudaError(char sms[], int line) {
     }
 }
 
-int loadImg(char* fileIN, char* fileOUT) {
-  printf("Reading image...\n");
-  int channels;
-  unsigned char *image = stbi_load(fileIN, &width, &height, &channels, 0);
-  if (!image) {
-    fprintf(stderr, "Couldn't load image.\n");
-    return (-1);
-  }
-  printf("Image Read. Width : %d, Height : %d, nComp: %d\n", width, height, channels);
 
-  printf("Filtrando\n");
-  // Transferir la imagen desde la memoria del sistema a la memoria de la GPU
-  unsigned char *d_image;
-  cudaMalloc((void **)&d_image, width * height * channels * sizeof(unsigned char));
-  cudaMemcpy(d_image, image, width * height * channels * sizeof(unsigned char), cudaMemcpyHostToDevice);
 
-  // Ejecutar el kernel para aplicar el filtro
-  dim3 block_dim(256, 1, 1);
-  dim3 grid_dim((width * height * channels + block_dim.x - 1) / block_dim.x, 1, 1);
-  eq_GPU<<<grid_dim, block_dim>>>(d_image, width, height, channels);
 
-  // Transferir la imagen resultante desde la memoria de la GPU a la memoria del sistema
-  cudaMemcpy(image, d_image, width * height * channels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
-
-  printf("Escribiendo\n");
-  // ESCRITURA DE LA IMAGEN EN SECUENCIAL
-  stbi_write_png(fileOUT, width, height, channels, image, 0);
-
-  // Liberar la memoria de la GPU
-  cudaFree(d_image);
-
-  // Liberar la memoria de la imagen
-  stbi_image_free(image);
-
-  return (0);
-}
-
-__global__ void eq_GPU(unsigned char *input_ptr, int width, int height, int channels)
-{
-    // Se define el histograma como una variable compartida entre los hilos de un bloque
-    __shared__ int histogram[256];
-
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-    // Se inicializa el histograma en 0
-    if (threadIdx.x < 256) {
-        histogram[threadIdx.x] = 0;
-    }
-
-    __syncthreads();
-
-    // Cada hilo procesa un pixel de la imagen
-    if (idx < width * height * channels) {
-        int Y = (int) (16 + 0.25679890625 * input_ptr[idx + 0] + 0.50412890625 * input_ptr[idx + 1] + 0.09790625 * input_ptr[idx + 2]);
-
-        // Cada hilo aumenta en 1 el valor del histograma en la posición correspondiente
-        atomicAdd(&histogram[Y], 1);
-    }
-
-    __syncthreads();
-
-    // Se calcula el histograma acumulado
-    for (int i = 1; i < 256; i++) {
-        histogram[i] += histogram[i - 1];
-    }
-
-    __syncthreads();
-
-    // Se normaliza el histograma acumulado
-    float normalization_factor = 255.0f / (width * height);
-    for (int i = 0; i < 256; i++) {
-        histogram[i] = (int)(histogram[i] * normalization_factor + 0.5f);
-        histogram[i] = min(histogram[i], 255);
-    }
-
-    __syncthreads();
-
-    // Se aplica la ecualización del histograma a la imagen
-    if (idx < width * height * channels) {
-        int value_before = input_ptr[idx];
-        int value_after = histogram[value_before];
-        input_ptr[idx] = value_after;
-    }
-}
 
   int main(int argc, char** argv) {
     if (argc != 3) {
@@ -221,7 +140,7 @@ __global__ void eq_GPU(unsigned char *input_ptr, int width, int height, int chan
     // Crear arreglo de histograma equalizado
     int* histogram_equalized;
     cudaMallocManaged(&histogram_equalized, 256 * sizeof(int));
-    cudaMemset(histogram_equalized, 0, 256 * sizeof(int
+    cudaMemset(histogram_equalized, 0, 256 * sizeof(int));
     for (int i = 0; i < 256; i++) {
         histogram_equalized[i] = (int) (255.0f * histogram_accumulated[i] / (width * height));
     }
@@ -244,6 +163,7 @@ __global__ void eq_GPU(unsigned char *input_ptr, int width, int height, int chan
     // Transferir la imagen de la GPU al CPU
     cudaMemcpy(image, d_image, width * height * channels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
     // Guardar la imagen resultante
+      cudaDeviceSynchronize();
     stbi_write_png(fileOUT, width, height, channels, image, width * channels);
 
     // Liberar memoria de la GPU y CPU
