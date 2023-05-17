@@ -5,118 +5,180 @@
 #include <sys/times.h>
 #include <sys/resource.h>
 
-using namespace std;
-
-
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-char *fileIN, *fileOUT;
-unsigned char *image;
-int width, height, pixelWidth; //meta info de la imagen
+using namespace std;
 
-void CheckCudaError(char sms[], int line);
+// Funciones del kernel
+__global__ void histogram_kernel(unsigned char *input_ptr, int *histogram, int width, int height) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int px = idx * 3;
+    if (idx < width * height) {
+        int Y = (int)(16 + 0.25679890625 * input_ptr[px] + 0.50412890625 * input_ptr[px + 1] + 0.09790625 * input_ptr[px + 2]);
+	int Cb = (int) (128 - 0.168736*input_ptr[px] - 0.331264*input_ptr[px+1] +0.5*input_ptr[px+2]);
+	int Cr = (int) (128 + 0.5*input_ptr[px] - 0.418688*input_ptr[px+1] - 0.081312*input_ptr[px+2]);
+
+        input_ptr[px]=Y;
+    	input_ptr[px+1] = Cb;
+	input_ptr[px+2] = Cr;
 
 
-int loadImg(char* fileIN, char* fileOUT)
-{
-  printf("Reading image...\n");
-  image = stbi_load(fileIN, &width, &height, &pixelWidth, 0);
-  if (!image) {
-    fprintf(stderr, "Couldn't load image.\n");
-    return (-1);
-  }
-  printf("Image Read. Width : %d, Height : %d, nComp: %d\n",width,height,pixelWidth);
-
-  printf("Filtrando\n");
-  //SECUENCIAL BLANCO Y NEGRO:
-  for(int i=0;i<width*height*3;i=i+3){
-    image[i]=image[i];
-    image[i+1]=image[i+1];
-    image[i+2]=image[i+2];
-  }
-  printf("Escribiendo\n");
-  //ESCRITURA DE LA IMAGEN EN SECUENCIAL
-  stbi_write_png(fileOUT,width,height,pixelWidth,image,0);
-  return(0);
-
+    atomicAdd(&histogram[Y], 1);
+}
 }
 
 
-//Histogram Equalization with CPU
-static int eq_CPU(unsigned char *input_ptr){
-
-    int histogram[256] = {0};
-
-    for (int i = 0; i< height*width*3; i+=3){
-        int r = input_ptr[i+0];
-        int g = input_ptr[i+1];
-        int b = input_ptr[i+2];
-        
-        int Y = (int) (16 + 0.25679890625*r + 0.50412890625*g + 0.09790625*b);
-        int Cb = (int) (128 - 0.168736*r - 0.331264*g +0.5*b);
-        int Cr = (int) (128 + 0.5*r - 0.418688*g - 0.081312*b);
-
-        input_ptr[i+0] = Y;
-        input_ptr[i+1] = Cb;
-        input_ptr[i+2] = Cr;
-
-        histogram[Y] += 1;
+__global__ void equalize_kernel(unsigned char *input_ptr, int *histogram_equalized, int width, int height) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int px  = idx *3;
+    if (idx < width * height) {
+    	int value_before = input_ptr[px];
+    	int value_after = histogram_equalized[value_before];
+    	input_ptr[px] = value_after;
     }
-
-    int sum = 0;
-    int histogram_equalized[256] = {0};
-    for(int i = 0; i < 256; i++){
-        sum += histogram[i];
-        histogram_equalized[i] = (int) (((((float)sum - histogram[0]))/(((float)width*height - 1)))*255);
-
-    }
-    for (int i = 0; i< height*width*3; i+=3){
-        int value_before = input_ptr[i];
-        int value_after = histogram_equalized[value_before];
-
-        input_ptr[i] = value_after;
-
-        int y = input_ptr[i+0];
-        int cb = input_ptr[i+1];
-        int cr = input_ptr[i+2];
-
-        int R = max(0, min(255, (int) (y + 1.402*(cr-128))));
-        int G = max(0, min(255, (int) (y - 0.344136*(cb-128) - 0.714136*(cr-128))));
-        int B = max(0, min(255, (int) (y + 1.772*(cb- 128))));
-
-        input_ptr[i+0] = R;
-        input_ptr[i+1] = G;
-        input_ptr[i+2] = B;
-    }
-
-    return 0;
 }
 
-int main(int argc, char** argv)
-{
-    char input[] = "./IMG/IMG00.jpg";
-    char output[] = "out.jpg";
+__global__ void ycbcr_kernel(unsigned char *input_ptr, int width, int height, bool toYCbCr) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int px = idx * 3;
+
+    if (idx < width * height) {
+        int r = input_ptr[px];
+        int g = input_ptr[px + 1];
+        int b = input_ptr[px + 2];
     
-    if (loadImg(input, output) == 0);
-    else
+        if (toYCbCr) {
+            int Y = (int) (16 + 0.25679890625 * r + 0.50412890625 * g + 0.09790625 * b);
+            int Cb = (int) (128 - 0.168736 * r - 0.331264 * g + 0.5 * b);
+            int Cr = (int) (128 + 0.5 * r - 0.418688 * g - 0.081312 * b);
+
+            input_ptr[px + 0] = Y;
+            input_ptr[px + 1] = Cb;
+            input_ptr[px + 2] = Cr;
+        } else {
+            int Y = r;
+            int Cb = g;
+            int Cr = b;
+
+            int R = max(0, min(255, (int) (Y + 1.402 * (Cr - 128))));
+            int G = max(0, min(255, (int) (Y - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128))));
+            int B = max(0, min(255, (int) (Y + 1.772 * (Cb - 128))));
+
+            input_ptr[px + 0] = R;
+            input_ptr[px + 1] = G;
+            input_ptr[px + 2] = B;
+        }
+   
+
+}}
+
+// Función para verificar los errores de CUDA
+void CheckCudaError(char sms[], int line) {
+    cudaError_t error;
+    error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        printf("CUDA error: %s at line %d\n", sms, line);
+        exit(-1);
+    }
+}
+
+
+
+
+
+  int main(int argc, char** argv) {
+    if (argc != 3) {
+        cout << "Usage: " << argv[0] << " <input_file> <output_file>" << endl;
         return (-1);
+    }
 
-    printf("Starting to process.. \n");
-        
-    eq_CPU(image);
+    char* fileIN = argv[1];
+    char* fileOUT = argv[2];
 
-    string output_name;
-    //Save the image
-    printf("Saving output image..\n");
-    output_name = "output_pixel_CPU.jpg";
+    // Cargar imagen
+    int width, height, channels;
+    unsigned char* image = stbi_load(fileIN, &width, &height, &channels, 0);
+    if (!image) {
+        fprintf(stderr, "Couldn't load image.\n");
+        return (-1);
+    }
 
-    const char* name2 = output_name.c_str();
-    stbi_write_png(name2 ,width,height,pixelWidth,image,0);
+    // Reservar memoria en la GPU
+    unsigned char* d_image;
+    cudaMalloc((void **)&d_image, width * height * channels * sizeof(unsigned char));
+    cudaMemcpy(d_image, image, width * height * channels * sizeof(unsigned char), cudaMemcpyHostToDevice);
 
-    printf("Image saved!\n");
+    // Definir dimensiones del grid y del bloque
+    dim3 block_dim(256, 1, 1);
+    dim3 grid_dim((width * height * channels + block_dim.x - 1) / block_dim.x, 1, 1);
+
+    // Crear histograma
+    int* histogram;
+    cudaMallocManaged(&histogram, 256 * sizeof(int));
+    cudaMemset(histogram, 0, 256 * sizeof(int));
+
+    // Cambios: Convertir la imagen de RGB a YCbCr
+    ycbcr_kernel<<<grid_dim, block_dim>>>(d_image, width, height, /*toYCbCr=*/true);
+
+    // Ejecutar kernel para crear histograma
+    histogram_kernel<<<grid_dim, block_dim>>>(d_image, histogram, width, height);
+
+    // Verificar errores de CUDA
+    CheckCudaError((char *)"Error creando histograma", __LINE__);
+
+    // Calcular el histograma acumulado
+    int* histogram_accumulated;
+    cudaMallocManaged(&histogram_accumulated, 256 * sizeof(int));
+    cudaMemset(histogram_accumulated, 0, 256 * sizeof(int));
+    int sum = 0;
+    for (int i = 0; i < 256; i++) {
+        sum += histogram[i];
+        histogram_accumulated[i] = sum;
+    }
+
+    // Verificar errores de CUDA
+    CheckCudaError((char *)"Error calculando histograma acumulado", __LINE__);
+
+    // Crear arreglo de histograma equalizado
+    int* histogram_equalized;
+    cudaMallocManaged(&histogram_equalized, 256 * sizeof(int));
+    cudaMemset(histogram_equalized, 0, 256 * sizeof(int));
+    for (int i = 0; i < 256; i++) {
+        histogram_equalized[i] = (int) (255.0f * histogram_accumulated[i] / (width * height));
+    }
+
+    // Verificar errores de CUDA
+    CheckCudaError((char *)"Error creando histograma equalizado", __LINE__);
+
+    // Ejecutar kernel para equalizar la imagen
+    equalize_kernel<<<grid_dim, block_dim>>>(d_image, histogram_equalized, width, height);
+
+    // Verificar errores de CUDA
+    CheckCudaError((char *)"Error al ejecutar kernel de equalización", __LINE__);
+
+    // Cambios: Convertir la imagen de YCbCr a RGB
+    ycbcr_kernel<<<grid_dim, block_dim>>>(d_image, width, height, /*toYCbCr=*/false);
+
+    // Verificar errores de CUDA
+    CheckCudaError((char *)"Error al convertir la imagen a RGB", __LINE__);
+
+    // Transferir la imagen de la GPU al CPU
+    cudaMemcpy(image, d_image, width * height * channels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+    // Guardar la imagen resultante
+      cudaDeviceSynchronize();
+    stbi_write_png(fileOUT, width, height, channels, image, width * channels);
+
+    // Liberar memoria de la GPU y CPU
+    cudaFree(d_image);
+    cudaFree(histogram);
+    cudaFree(histogram_accumulated);
+    cudaFree(histogram_equalized);
+    stbi_image_free(image);
 
     return 0;
 }
+
+
