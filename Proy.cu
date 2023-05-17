@@ -37,11 +37,14 @@ if (px < width * height && channel == 0) {
 
 __global__ void ycbcr_kernel(unsigned char *input_ptr, int width, int height, bool toYCbCr) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < width * height * 3) {
-        int r = input_ptr[idx + 0];
-        int g = input_ptr[idx + 1];
-        int b = input_ptr[idx + 2];
-
+    int px = idx / 3;
+    int channel = idx % 3;
+    
+    if (px < width * height) {
+        int r = input_ptr[px * 3 + 0];
+        int g = input_ptr[px * 3 + 1];
+        int b = input_ptr[px * 3 + 2];
+    
         if (toYCbCr) {
             int Y = (int) (16 + 0.25679890625 * r + 0.50412890625 * g + 0.09790625 * b);
             int Cb = (int) (128 - 0.168736 * r - 0.331264 * g + 0.5 * b);
