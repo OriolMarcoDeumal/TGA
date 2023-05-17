@@ -14,20 +14,23 @@ using namespace std;
 
 // Funciones del kernel
 __global__ void histogram_kernel(unsigned char *input_ptr, int *histogram, int width, int height) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < width * height * 3) {
-        int Y = (int) (16 + 0.25679890625 * input_ptr[idx + 0] + 0.50412890625 * input_ptr[idx + 1] + 0.09790625 * input_ptr[idx + 2]);
-        atomicAdd(&histogram[Y], 1);
-    }
+    int px = idx / 3;
+    int channel = idx % 3;
+if (px < width * height && channel == 0) {
+    int Y = (int)(16 + 0.25679890625 * input_ptr[px * 3 + 0] + 0.50412890625 * input_ptr[px * 3 + 1] + 0.09790625 * input_ptr[px * 3 + 2]);
+    atomicAdd(&histogram[Y], 1);
+}
 }
 
+
 __global__ void equalize_kernel(unsigned char *input_ptr, int *histogram_equalized, int width, int height) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < width * height * 3) {
-        int value_before = input_ptr[idx];
-        int value_after = histogram_equalized[value_before];
-        input_ptr[idx] = value_after;
-    }
+    int px = idx / 3;
+    int channel = idx % 3;
+if (px < width * height && channel == 0) {
+    int value_before = input_ptr[idx];
+    int value_after = histogram_equalized[value_before];
+    input_ptr[idx] = value_after;
+}
 }
 
 __global__ void ycbcr_kernel(unsigned char *input_ptr, int width, int height, bool toYCbCr) {
