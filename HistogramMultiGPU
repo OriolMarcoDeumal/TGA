@@ -1,0 +1,99 @@
+// Function to check the number of GPUs
+void checkDeviceCount(int &numDevices) {
+    cudaGetDeviceCount(&numDevices);
+    if (numDevices < 1) {
+        printf("No CUDA capable devices were detected\n");
+        exit(-1);
+    }
+}
+
+// Kernel functions
+// ... [Rest of the code same as before] ...
+
+int main(int argc, char** argv) {
+    // Check the number of GPUs
+    int numDevices;
+    checkDeviceCount(numDevices);
+
+    // [Rest of the code same as before...]
+
+    // Load image
+    // [Rest of the code same as before...]
+
+    // Define grid and block dimensions
+    dim3 block_dim(256, 1, 1);
+
+    // Create histogram
+    int* histogram;
+    cudaMallocManaged(&histogram, 256 * sizeof(int));
+
+    // Create accumulated histogram and equalized histogram arrays
+    int* histogram_accumulated;
+    cudaMallocManaged(&histogram_accumulated, 256 * sizeof(int));
+    int* histogram_equalized;
+    cudaMallocManaged(&histogram_equalized, 256 * sizeof(int));
+
+    // Split the image and histogram equalization workload among the GPUs
+    int slice_height = height / numDevices; // This assumes height is divisible by the number of GPUs
+    for (int device = 0; device < numDevices; device++) {
+        cudaSetDevice(device);
+
+        // Allocate device memory
+        unsigned char* d_image;
+        cudaMalloc((void **)&d_image, width * slice_height * channels * sizeof(unsigned char));
+        cudaMemcpy(d_image, image + device * slice_height * width * channels, width * slice_height * channels * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+        // Calculate grid dimensions for this slice
+        dim3 grid_dim((width * slice_height * channels + block_dim.x - 1) / block_dim.x, 1, 1);
+
+        // Clear histogram
+        cudaMemset(histogram, 0, 256 * sizeof(int));
+
+        // Convert the image from RGB to YCbCr
+        ycbcr_kernel<<<grid_dim, block_dim>>>(d_image, width, slice_height, channels, /*toYCbCr=*/true);
+
+        // Execute kernel to create histogram
+        histogram_kernel<<<grid_dim, block_dim>>>(d_image, histogram, width, slice_height, channels);
+
+        // Wait for histogram kernel to finish and check for errors
+        cudaDeviceSynchronize();
+        CheckCudaError((char *)"Error creating histogram", __LINE__);
+
+        // Calculate accumulated histogram
+        cudaMemset(histogram_accumulated, 0, 256 * sizeof(int));
+        int sum = 0;
+        for (int i = 0; i < 256; i++) {
+            sum += histogram[i];
+            histogram_accumulated[i] = sum;
+        }
+
+        // Create equalized histogram array
+        cudaMemset(histogram_equalized, 0, 256 * sizeof(int));
+        for (int i = 0; i < 256; i++) {
+            histogram_equalized[i] = (int) (255.0f * histogram_accumulated[i] / (width * slice_height));
+        }
+
+        // Execute kernel to equalize image
+        equalize_kernel<<<grid_dim, block_dim>>>(d_image, histogram_equalized, width, slice_height, channels);
+
+        // Convert the image from YCbCr to RGB
+        ycbcr_kernel<<<grid_dim, block_dim>>>(d_image, width, slice_height, channels, /*toYCbCr=*/false);
+
+        // Transfer image from GPU to CPU
+        cudaMemcpy(image + device * slice_height * width * channels, d_image, width * slice_height * channels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
+        // Free device memory
+        cudaFree(d_image);
+    }
+
+    // Save resulting image
+    stbi_write_png(fileOUT, width, height, channels, image, width * channels);
+
+    // Free remaining GPU and CPU memory
+    cudaFree(histogram);
+    cudaFree(histogram_accumulated);
+    cudaFree(histogram_equalized);
+    stbi_image_free(image);
+
+    return 0;
+}
