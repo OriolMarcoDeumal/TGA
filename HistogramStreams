@@ -1,0 +1,102 @@
+#include <iostream>
+#include <numeric>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/times.h>
+#include <sys/resource.h>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
+using namespace std;
+
+// Kernel functions
+__global__ void histogram_kernel(unsigned char *input_ptr, int *histogram, int width, int height, int channels) {
+    // [Rest of the code same as before...]
+}
+
+__global__ void equalize_kernel(unsigned char *input_ptr, int *histogram_equalized, int width, int height, int channels) {
+    // [Rest of the code same as before...]
+}
+
+__global__ void ycbcr_kernel(unsigned char *input_ptr, int width, int height, int channels, bool toYCbCr) {
+    // [Rest of the code same as before...]
+}
+
+// Function to check CUDA errors
+void CheckCudaError(char sms[], int line) {
+    // [Rest of the code same as before...]
+}
+
+int main(int argc, char** argv) {
+    // [Rest of the code same as before...]
+
+    // Load image
+    // [Rest of the code same as before...]
+
+    // Allocate memory on the GPU
+    unsigned char* d_image;
+    cudaMalloc((void **)&d_image, width * height * channels * sizeof(unsigned char));
+
+    // Define grid and block dimensions
+    dim3 block_dim(256, 1, 1);
+    dim3 grid_dim((width * height * channels + block_dim.x - 1) / block_dim.x, 1, 1);
+
+    // Create histogram
+    int* histogram;
+    cudaMallocManaged(&histogram, 256 * sizeof(int));
+
+    // Create CUDA stream
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
+    // Asynchronously copy image to GPU and initialize histogram with zeros
+    cudaMemcpyAsync(d_image, image, width * height * channels * sizeof(unsigned char), cudaMemcpyHostToDevice, stream);
+    cudaMemsetAsync(histogram, 0, 256 * sizeof(int), stream);
+
+    // Convert the image from RGB to YCbCr
+    ycbcr_kernel<<<grid_dim, block_dim, 0, stream>>>(d_image, width, height, channels, /*toYCbCr=*/true);
+
+    // Execute kernel to create histogram
+    histogram_kernel<<<grid_dim, block_dim, 0, stream>>>(d_image, histogram, width, height, channels);
+
+    // Wait for the operations in the stream to finish
+    cudaStreamSynchronize(stream);
+    CheckCudaError((char *)"Error creating histogram", __LINE__);
+
+    // Calculate accumulated histogram
+    // [Rest of the code same as before...]
+
+    // Create equalized histogram array
+    // [Rest of the code same as before...]
+
+    // Execute kernel to equalize image
+    equalize_kernel<<<grid_dim, block_dim, 0, stream>>>(d_image, histogram_equalized, width, height, channels);
+
+    // Convert the image from YCbCr to RGB
+    ycbcr_kernel<<<grid_dim, block_dim, 0, stream>>>(d_image, width, height, channels, /*toYCbCr=*/false);
+
+    // Asynchronously copy image from GPU to CPU
+    cudaMemcpyAsync(image, d_image, width * height * channels * sizeof(unsigned char), cudaMemcpyDeviceToHost, stream);
+
+    // Wait for the operations in the stream to finish before saving the image
+    cudaStreamSynchronize(stream);
+    CheckCudaError((char *)"Error converting image to RGB", __LINE__);
+
+    // Save resulting image
+    stbi_write_png(fileOUT, width, height, channels, image, width * channels);
+
+    // Free GPU and CPU memory
+    cudaFree(d_image);
+    cudaFree(histogram);
+    cudaFree(histogram_accumulated);
+    cudaFree(histogram_equalized);
+    stbi_image_free(image);
+
+    // Destroy CUDA stream
+    cudaStreamDestroy(stream);
+
+    return 0;
+}
