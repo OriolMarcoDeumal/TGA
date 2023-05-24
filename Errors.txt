@@ -1,0 +1,9 @@
+/Soft/stb/20200430/stb_image.h(4096): warning: variable "old_limit" was set but never used
+
+/Soft/stb/20200430/stb_image.h(4975): warning: variable "idata_limit_old" was set but never used
+
+ProyectoCud.cu(109): error: argument of type "int" is incompatible with parameter of type "int *"
+
+ProyectoCud.cu(109): error: too few arguments in function call
+
+2 errors detected in the compilation of "ProyectoCud.cu".
