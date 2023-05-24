@@ -12,38 +12,29 @@
 
 using namespace std;
 
-// Funciones del kernel
-__global__ void histogram_kernel(unsigned char *input_ptr, int *histogram, int width, int height) {
+// Kernel functions
+__global__ void histogram_kernel(unsigned char *input_ptr, int *histogram, int width, int height, int channels) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int px = idx * 3;
+    int px = idx * channels;
     if (idx < width * height) {
-        int Y = (int)(16 + 0.25679890625 * input_ptr[px] + 0.50412890625 * input_ptr[px + 1] + 0.09790625 * input_ptr[px + 2]);
-	int Cb = (int) (128 - 0.168736*input_ptr[px] - 0.331264*input_ptr[px+1] +0.5*input_ptr[px+2]);
-	int Cr = (int) (128 + 0.5*input_ptr[px] - 0.418688*input_ptr[px+1] - 0.081312*input_ptr[px+2]);
-
-        input_ptr[px]=Y;
-    	input_ptr[px+1] = Cb;
-	input_ptr[px+2] = Cr;
-
-
-    atomicAdd(&histogram[Y], 1);
-}
-}
-
-
-__global__ void equalize_kernel(unsigned char *input_ptr, int *histogram_equalized, int width, int height) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int px  = idx *3;
-    if (idx < width * height) {
-    	int value_before = input_ptr[px];
-    	int value_after = histogram_equalized[value_before];
-    	input_ptr[px] = value_after;
+        int Y = input_ptr[px];
+        atomicAdd(&histogram[Y], 1);
     }
 }
 
-__global__ void ycbcr_kernel(unsigned char *input_ptr, int width, int height, bool toYCbCr) {
+__global__ void equalize_kernel(unsigned char *input_ptr, int *histogram_equalized, int width, int height, int channels) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int px = idx * 3;
+    int px = idx * channels;
+    if (idx < width * height) {
+        int value_before = input_ptr[px];
+        int value_after = histogram_equalized[value_before];
+        input_ptr[px] = value_after;
+    }
+}
+
+__global__ void ycbcr_kernel(unsigned char *input_ptr, int width, int height, int channels, bool toYCbCr) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int px = idx * channels;
 
     if (idx < width * height) {
         int r = input_ptr[px];
@@ -74,54 +65,101 @@ __global__ void ycbcr_kernel(unsigned char *input_ptr, int width, int height, bo
     }
 }
 
-void CheckCudaError(cudaError_t error, const char* file, int line) {
+// Function to check CUDA errors
+void CheckCudaError(char sms[], int line) {
+    cudaError_t error;
+    error = cudaGetLastError();
     if (error != cudaSuccess) {
-        fprintf(stderr, "CUDA error: %s at %s:%d\n", cudaGetErrorString(error), file, line);
+        printf("CUDA error: %s at line %d\n", sms, line);
         exit(-1);
     }
 }
 
-
-
-
-
 int main(int argc, char** argv) {
     if (argc != 3) {
-        cout << "Usage: " << argv[0] << " <input_file> <output_file>\n";
-        return -1;
+        cout << "Usage: " << argv[0] << " <input_file> <output_file>" << endl;
+        return (-1);
     }
 
-    // Load the input image.
+    char* fileIN = argv[1];
+    char* fileOUT = argv[2];
+
+    // Load image
     int width, height, channels;
-    unsigned char* image = stbi_load(argv[1], &width, &height, &channels, 0);
+    unsigned char* image = stbi_load(fileIN, &width, &height, &channels, 0);
     if (!image) {
-        fprintf(stderr, "Couldn't load image: %s\n", argv[1]);
-        return -1;
+        fprintf(stderr, "Couldn't load image.\n");
+        return (-1);
     }
 
-    // Convert the image to YCbCr.
-    unsigned char* ycbcr_image = new unsigned char[width * height * 3];
-    ycbcr_kernel<<<dim3(width / 16, height / 16), dim3(16, 16), 0>>>(image, width, height, true);
+    // Allocate memory on the GPU
+    unsigned char* d_image;
+    cudaMalloc((void **)&d_image, width * height * channels * sizeof(unsigned char));
+    cudaMemcpy(d_image, image, width * height * channels * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    // Define grid and block dimensions
+    dim3 block_dim(256, 1, 1);
+    dim3 grid_dim((width * height * channels + block_dim.x - 1) / block_dim.x, 1, 1);
+
+    // Create histogram
+    int* histogram;
+    cudaMallocManaged(&histogram, 256 * sizeof(int));
+    cudaMemset(histogram, 0, 256 * sizeof(int));
+
+    // Convert the image from RGB to YCbCr
+    ycbcr_kernel<<<grid_dim, block_dim>>>(d_image, width, height, channels, /*toYCbCr=*/true);
     cudaDeviceSynchronize();
+    CheckCudaError((char *)"Error converting image to YCbCr", __LINE__);
 
-    // Equalize the image.
-    unsigned char* equalized_image = new unsigned char[width * height * 3];
-    equalize_kernel<<<dim3(width / 16, height / 16), dim3(16, 16), 0>>>(ycbcr_image, width, height);
+    // Execute kernel to create histogram
+    histogram_kernel<<<grid_dim, block_dim>>>(d_image, histogram, width, height, channels);
     cudaDeviceSynchronize();
+    CheckCudaError((char *)"Error creating histogram", __LINE__);
 
-    // Convert the image back to RGB.
-    unsigned char* output_image = new unsigned char[width * height * 3];
-    ycbcr_kernel<<<dim3(width / 16, height / 16), dim3(16, 16), 0>>>(equalized_image, width, height, false);
+    // Calculate accumulated histogram
+    int* histogram_accumulated;
+    cudaMallocManaged(&histogram_accumulated, 256 * sizeof(int));
+    cudaMemset(histogram_accumulated, 0, 256 * sizeof(int));
+    int sum = 0;
+    for (int i = 0; i < 256; i++) {
+        sum += histogram[i];
+        histogram_accumulated[i] = sum;
+    }
+
+    CheckCudaError((char *)"Error calculating accumulated histogram", __LINE__);
+
+    // Create equalized histogram array
+    int* histogram_equalized;
+    cudaMallocManaged(&histogram_equalized, 256 * sizeof(int));
+    cudaMemset(histogram_equalized, 0, 256 * sizeof(int));
+    for (int i = 0; i < 256; i++) {
+        histogram_equalized[i] = (int) (255.0f * histogram_accumulated[i] / (width * height));
+    }
+
+    CheckCudaError((char *)"Error creating equalized histogram", __LINE__);
+
+    // Execute kernel to equalize image
+    equalize_kernel<<<grid_dim, block_dim>>>(d_image, histogram_equalized, width, height, channels);
     cudaDeviceSynchronize();
+    CheckCudaError((char *)"Error executing equalization kernel", __LINE__);
 
-    // Save the output image.
-    stbi_write_png(argv[2], width, height, channels, output_image, width * channels);
+    // Convert the image from YCbCr to RGB
+    ycbcr_kernel<<<grid_dim, block_dim>>>(d_image, width, height, channels, /*toYCbCr=*/false);
+    cudaDeviceSynchronize();
+    CheckCudaError((char *)"Error converting image to RGB", __LINE__);
 
-    // Free the memory.
-    delete[] image;
-    delete[] ycbcr_image;
-    delete[] equalized_image;
-    delete[] output_image;
+    // Transfer image from GPU to CPU
+    cudaMemcpy(image, d_image, width * height * channels * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
+    // Save resulting image
+    stbi_write_png(fileOUT, width, height, channels, image, width * channels);
+
+    // Free GPU and CPU memory
+    cudaFree(d_image);
+    cudaFree(histogram);
+    cudaFree(histogram_accumulated);
+    cudaFree(histogram_equalized);
+    stbi_image_free(image);
 
     return 0;
 }
